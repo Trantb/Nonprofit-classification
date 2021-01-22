@@ -1,3 +1,8 @@
+#Set up before the work
+x <- c('stringr', 'openxlsx', 'tm',
+       'SnowballC', 'corpus', 'glmnet', 'caret')
+Install.packages(x)
+
 library(stringr)
 library(openxlsx)
 library(tm)
@@ -6,44 +11,54 @@ library(corpus)
 library(glmnet)
 library(caret)
 
-datafile <- read.xlsx('train.xlsx')
+#Read the datafile
+datafile <- read.xlsx('train.xlsx') 
+# include 3846 nonprofit organizations with companies names, 
+# mission statements and classification either 0-not important and 1-important 
 
-text <- data.frame(NULL)
-for (i in 1:length(datafile$Mission.Statement)){
+#The idea is to divide a sentence into every single word. For example,
+#'I have a big brown cat' will be divided into 'I' 'have' 'a' 'big' 'brown' 'cat'.
+#After that, there are other steps to remove as much as unimportant information as possible
+
+text <- data.frame(NULL) # create a data frame to store the transformation
+for (i in 1:length(datafile$Mission.Statement)){ 
   corpus <- Corpus(VectorSource(datafile$Mission.Statement[i]))
-  corpus <- tm_map(corpus, content_transformer(tolower))
-  corpus <- tm_map(corpus, removeWords, stopwords('english'))
-  corpus <- tm_map(corpus, removeNumbers)
-  corpus <- tm_map(corpus, stem_snowball)
-  corpus <- tm_map(corpus, removePunctuation)
-  corpus <- tm_map(corpus, stripWhitespace)
+  corpus <- tm_map(corpus, content_transformer(tolower)) # from uppercase to lower case
+  corpus <- tm_map(corpus, removeWords, stopwords('english')) # remove common words such as 'a' 'an' 'the'
+  corpus <- tm_map(corpus, removeNumbers) #remove number
+  corpus <- tm_map(corpus, stem_snowball) #unify words family to one word such as 'sleep', 'slept', 'sleeping', 'asleep' to 'sleep'
+  corpus <- tm_map(corpus, removePunctuation) #remove ',' '.' '!' '?'
+  corpus <- tm_map(corpus, stripWhitespace) #remove white space after previous steps
   text[i,1] <- corpus$content
 }
 
+#The transformation is complete. However, it is not in the table form yet. Therefore, these steps transforms it to table form
 text <- text_tokens(text$V1)
 text <- Corpus(VectorSource(text))
 text <- DocumentTermMatrix(text, control = list(minWordLength = 1))
-text <- as.matrix(text)
+text <- as.matrix(text) #matrix should work as well, but it is too heavy. Therefore, the table form is more efficient.
+text <- as.data.frame(text) #the transformation is completed.
 
-text <- as.data.frame(text)
+#Now we need to combine with the original datafile having the Essentials as '0' or '1' which is the dependent variable.
 datafile <- cbind(datafile, text)
-datafile <- datafile[,-c(1,2)]
+datafile <- datafile[,-c(1,2)] #Column 1 is company name, which we do not need. Column 2 is mission statement which
+# we already completed the transformation.
 
-#lasso regression with full model
-Independent <- model.matrix(Essential ~., datafile)[,-1]
-Dependent <- datafile[,1]
-
+#Lasso regression with full model
+Independent <- model.matrix(Essential ~., datafile)[,-1] #create matrix of independent variables
+Dependent <- datafile[,1] #vector of dependent variable which is the essential
 set.seed(95)
 cv.lasso <- cv.glmnet(Independent, Dependent, alpha = 1, family = 'binomial')
 model <- glmnet(Independent, Dependent, alpha = 1, 
-                family = 'binomial', lambda = cv.lasso$lambda.min)
-#Otherwise, you can try a different lambda with cv.lasso$lambda.1se
+                family = 'binomial', lambda = cv.lasso$lambda.min) #Otherwise, you can try a different lambda with cv.lasso$lambda.1se
+
 pred <- predict(model, Independent, type = 'response')
 confusionMatrix(as.factor(ifelse(pred >= .5, '1', '0')), 
-                as.factor(datafile$Essential), positive = '1')
+                as.factor(datafile$Essential), positive = '1') # compare between the prediction and original results. 
+#Overall, the model is correct roughly 83%. However, the problem is the Sensitivity is way too low 64% while Specificity is 93%.
 
 #Lasso Regression with 70% train and 30% test
-train.index <- sample(nrow(datafile), nrow(datafile)*.7)
+train.index <- sample(nrow(datafile), nrow(datafile)*0.7)
 train.data <- datafile[train.index, ]
 valid.data <- datafile[-train.index, ]
 
@@ -52,24 +67,25 @@ Dependent <- train.data[,1]
 cv.lasso <- cv.glmnet(Independent, Dependent, alpha = 1, family = 'binomial')
 model <- glmnet(Independent, Dependent, alpha = 1, 
                 family = 'binomial', 
-                lambda = cv.lasso$lambda.min) #can try cv.lasso$lambda.1se
+                lambda = cv.lasso$lambda.min) #can try cv.lasso$lambda.1se though the results are even worse.
 Independent.valid <- model.matrix(Essential ~., valid.data)[,-1]
 pred <- predict(model, Independent.valid, type = 'response')
 confusionMatrix(as.factor(ifelse(pred >= 0.5, 1, 0)), as.factor(valid.data$Essential),
                 positive = '1')
+#The prediction is correct about 73% which Sensitivity is even lower than original model 47% and Specificity is 89%.
 
-
-#ridge regression
+#Ridge regression with full model
 Independent <- model.matrix(Essential ~., datafile)[,-1]
 Dependent <- datafile[,1]
 set.seed(71)
-cv.ridge <- cv.glmnet(Independent, Dependent, alpha = 0, family = 'binomial')
+cv.ridge <- cv.glmnet(Independent, Dependent, alpha = 0, family = 'binomial') # Ridge has alpha = 0 while Lasso has alpha = 1
 model <- glmnet(Independent, Dependent, alpha = 0, family = 'binomial', 
                 lambda = cv.ridge$lambda.min) #can try cv.ridge$lambda.1se
 pred <- predict(model, Independent, type = 'response')
 confusionMatrix(as.factor(ifelse(pred >= .5, '1', '0')), as.factor(datafile$Essential),
                 positive = '1')
 
+#Ridge Regression with 70% training and 30% testing
 set.seed(47)
 train.index <- sample(nrow(datafile), nrow(datafile)*.7)
 train.data <- datafile[train.index, ]
@@ -83,3 +99,4 @@ Independent.valid <- model.matrix(Essential ~., valid.data)[,-1]
 pred <- predict(model, Independent.valid, type = 'response')
 confusionMatrix(as.factor(ifelse(pred >= .5, 1, 0)), as.factor(valid.data$Essential),
                 positive = '1')
+# Results overall are worse than Lasso Regression. 
